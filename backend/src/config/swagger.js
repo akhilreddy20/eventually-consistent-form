@@ -1,4 +1,8 @@
 import swaggerJsdoc from 'swagger-jsdoc';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const options = {
   definition: {
@@ -7,7 +11,7 @@ const options = {
       title: 'Eventually Consistent Form API',
       version: '1.0.0',
       description: `
-        A resilient REST API demonstrating production-ready patterns for handling unreliable network requests.
+        A REST API demonstrating resilience patterns for handling unreliable network requests.
         
         ## Features
         - **Automatic Retry Logic**: Exponential backoff (1s → 2s → 4s)
@@ -20,7 +24,7 @@ const options = {
         ### Idempotency Keys
         Each submission requires a unique \`idempotencyKey\`. The server caches responses by this key, ensuring that retries don't create duplicate records.
         
-        Example: \`1709123456789-x7k9m2p4q\`
+        Example: \`3b241101-e2bb-4255-8caf-4136c566a962\`
         
         ### Mock API Behavior
         The API randomly responds with:
@@ -47,10 +51,6 @@ const options = {
       {
         url: 'http://localhost:3001',
         description: 'Development server'
-      },
-      {
-        url: 'https://your-production-url.com',
-        description: 'Production server'
       }
     ],
     tags: [
@@ -64,7 +64,7 @@ const options = {
       }
     ]
   },
-  apis: ['./src/controllers/*.js', './src/server.js']
+  apis: [path.join(srcDir, 'controllers/*.js'), path.join(srcDir, 'app.js')]
 };
 
 const swaggerSpec = swaggerJsdoc(options);

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { isValidEmail, isValidAmount } from '../utils/idempotency';
 
-export const SubmissionForm = ({ onSubmit, disabled, status }) => {
+export const SubmissionForm = ({ onSubmit, disabled }) => {
   const [email, setEmail] = useState('');
   const [amount, setAmount] = useState('');
   const [errors, setErrors] = useState({});
