@@ -1,328 +1,110 @@
-🚀 Eventually Consistent Form
+# Eventually Consistent Form
 
-A production-ready full-stack JavaScript application demonstrating resilient form submission with automatic retries, idempotency, and clear state management.
+[![CI](https://github.com/akhilreddy20/eventually-consistent-form/actions/workflows/ci.yml/badge.svg)](https://github.com/akhilreddy20/eventually-consistent-form/actions/workflows/ci.yml)
 
-📋 Table of Contents
-       Overview
-       Features
-       Demo
-       Tech Stack
-       Architecture
-       Getting Started
-       API Documentation
-       How It Works
-       Project Structure
-       Testing
-       Deployment
-       Contributing
-       License
-       Author
+A small full-stack app (React + Express) that explores how to submit a form **exactly once** over an unreliable network, using **idempotency keys**, **retries with exponential backoff and jitter**, and an explicit client-side state machine.
 
-    🎯 Overview
-        This project demonstrates best practices for building resilient distributed systems that gracefully handle network failures. It implements patterns commonly used in production environments at companies like Netflix, Amazon, and Google.
-       The Problem
-           In real-world applications:
-              🔴 Network requests fail randomly
-              🔴 Services become temporarily unavailable
-              🔴 Retries can create duplicate data
-              🔴 Users need clear feedback on request status
+**Live demo:** https://eventually-consistent-form-mocha.vercel.app · **API docs:** `/api-docs` (Swagger)
 
-       The Solution
-           This application solves these challenges with:
+---
 
-             ✅ Automatic Retry Logic - Exponential backoff (1s → 2s → 4s)
-             ✅ Idempotency Keys - Prevent duplicate submissions
-             ✅ State Machine - Predictable UI behavior
-             ✅ Visual Feedback - Clear status indicators
-             ✅ Graceful Error Handling - User-friendly messages
+## The problem
 
-   ✨ Features
-      🔄 Automatic Retry with Exponential Backoff
-          Retries failed requests up to 3 times
-          Delays increase exponentially: 1s → 2s → 4s
-          Only retries on temporary failures (503 errors)
-          Stops immediately on permanent errors (4xx)
+When a client doesn't get a response, it can't tell whether the request failed or only the response was lost. Retrying is necessary, but a naive retry can **double-charge** or **double-submit**. This project makes retries safe.
 
-          Why Exponential Backoff?
-           Reduces server load during outages
-           Gives systems time to recover
+## How it works
 
-   🔐 Idempotency (Zero Duplicates)
-        Each submission gets a unique key: timestamp-random
-        Backend checks for duplicate keys before processing
-        Same request always returns same response
-        Safe to retry without creating duplicate records
+```mermaid
+sequenceDiagram
+    participant C as Client (React)
+    participant S as API (Express)
+    C->>C: key = crypto.randomUUID()  (one per logical submission)
+    C->>S: POST /api/submissions  Idempotency-Key: key
+    alt completed before
+        S-->>C: 200 stored result  (Idempotent-Replayed: true)
+    else same key already in flight
+        S-->>C: waits on the SAME operation, returns its result
+    else new key
+        S->>S: process (simulated: 30% 503, 30% slow 5–10 s, 40% fast)
+        S-->>C: 200 / 503 (Retry-After)
+    end
+    C->>C: on 5xx / timeout / network error → backoff with jitter, retry with SAME key
+```
 
-   State Machine Flow:
+### Key design decisions
 
-   IDLE → PENDING → SUCCESS ✅
-         ↓
-      RETRYING → SUCCESS ✅ / ERROR ❌
+| Decision | Why | Trade-off |
+|---|---|---|
+| **Client-generated key, sent in the `Idempotency-Key` header** (body still accepted) | Same convention as Stripe's API. The client is the only party that knows two requests are the "same" operation. | The client must persist the key across reloads for full safety (not done here). |
+| **In-flight de-duplication.** The key is registered *before* the first `await`, and concurrent callers share one promise. | Without it, a retry that arrives while the first attempt is still running passes the "seen?" check and creates a duplicate. That bug existed in v1 and is now covered by a 50-request concurrency test. | Single-process only (see Limitations). |
+| **Request fingerprint (SHA-256 of the body)** | Reusing a key with a *different* body is a client bug; the server returns **422** instead of silently replaying the wrong result. | Field order must be stable when hashing. |
+| **Failures don't poison the key** | A 503 attempt stores nothing, so the next retry with the same key gets a fresh attempt. | — |
+| **Full-jitter backoff** (`random(0, min(cap, base·2^n))`) with `Retry-After` honoured | Avoids synchronized retry storms against a recovering server. | Slightly less predictable latency. |
+| **Per-request timeout** (`AbortController`, 15 s) | Without it, "network timeout → retry" can never happen. | The timeout must exceed the slowest legitimate response. |
+| **Retry only 408/429/5xx/network/timeout; never other 4xx** | Retrying a validation error can't succeed. | — |
 
-      isual indicators for each state:
+### Client state machine
 
-     🟢 Idle - Green "Submit" button
-     🟡 Pending - Yellow spinner "Submitting..."
-     🟠 Retrying - Orange spinner "Attempt N of 3"
-     ✅ Success - Green checkmark "Success!"
-     ❌ Error - Red X with error message
+`idle → pending → (retrying ⟲) → success | error`. A ref guard ignores double-clicks while a submission is in flight, so one click equals one key.
 
-   🧪 Mock API Behavior (For Testing)
-        The backend randomly responds with:
-        40% → Immediate success (200 OK)
-        30% → Temporary failure (503) - triggers retry
-        30% → Delayed success (5-10 second wait, then 200 OK)
-        This simulates real-world unpredictability!
+## Running locally
 
+```bash
+# API
+cd backend && npm ci && npm run dev          # http://localhost:3001  (docs at /api-docs)
 
-    🛠️ Tech Stack
-         Frontend
-         Technology          Version        Purpose 
-         React               18.2.0          UI library
-         Vite                5.2.0           Build tool & dev server  
+# UI
+cd frontend && npm ci && npm run dev         # http://localhost:5173
+```
 
-         Backend
-         Technology          Version        Purpose
-         Express.js          4.18.2         Web framework
-         Node.js             18+            Runtime environment
-         UUID                9.0.0          Unique ID generation 
-         Swagger             5.0.0          API documentation
+| Env var | Default | Purpose |
+|---|---|---|
+| `PORT` | `3001` | API port |
+| `CORS_ORIGINS` | localhost + demo URL | Comma-separated allow-list |
+| `SIMULATE_FAILURES` | `true` | Set `false` to turn off the random 503s and delays |
+| `VITE_API_URL` | `http://localhost:3001` | API base URL for the UI |
 
-      Development Tools
-      Nodemon - Auto-restart on changes
-      CORS - Cross-origin resource sharing
-      Swagger UI - Interactive API docs
+Docker (API): `docker build -t ecf-api ./backend && docker run -p 3001:3001 ecf-api`
 
-      🏗️ Architecture
-            System Overview
-        
-        ┌─────────────────────────────────────────────────────────────┐
-        │                        Browser                              │
-        ├─────────────────────────────────────────────────────────────┤
-        │                                                             │
-        │  ┌────────────────────────────────────────────────────┐    │
-        │  │      React Frontend (localhost:5173)               │    │
-        │  │                                                    │    │
-        │  │  Components:                                       │    │
-        │  │  ├── SubmissionForm (Input & Validation)           │    │
-        │  │  ├── StatusIndicator (Visual Feedback)             │    │
-        │  │  └── SubmissionsList (Display Results)             │    │
-        │  │                                                    │    │
-        │  │  Custom Hooks:                                     │    │
-        │  │  ├── useSubmission (State Machine)                 │    │
-        │  │  └── useSubmissionsList (Data Fetching)            │    │
-        │  │                                                    │    │
-        │  │  Services:                                         │    │
-        │  │  └── api.js (Retry Logic + HTTP Client)            │    │
-        │  └────────────────────────────────────────────────────┘    │
-        │                           ▲                                │
-        │                           │                                │
-        │                    HTTP REST API (JSON)                    │
-        │                           │                                │
-        │                           ▼                                │
-        │  ┌────────────────────────────────────────────────────┐    │
-        │  │      Express Backend (localhost:3001)              │    │
-        │  │                                                    │    │
-        │  │  server.js (Entry Point)                           │    │
-        │  │  ├── CORS Middleware                               │    │
-        │  │  ├── JSON Parser                                   │    │
-        │  │  └── Swagger UI                                    │    │
-        │  │                                                    │    │
-        │  │  submissions.controller.js (Routes)                │    │
-        │  │  ├── POST /api/submissions                         │    │
-        │  │  ├── GET /api/submissions                          │    │
-        │  │  └── POST /api/submissions/clear                   │    │
-        │  │                                                    │    │
-        │  │  submissions.service.js (Business Logic)           │    │
-        │  │  ├── Idempotency Check (Map)                       │    │
-        │  │  ├── Random API Behavior                           │    │
-        │  │  └── In-Memory Storage                             │    │
-        │  └────────────────────────────────────────────────────┘    │
-        │                                                            │
-        └─────────────────────────────────────────────────────────────┘
+## Tests
 
-        Data Flow
+```bash
+cd backend && npm test     # node:test + fetch (no extra deps): idempotency, concurrency, validation, error mapping
+cd frontend && npm test    # node:test: retry policy, same-key retries, timeouts, Retry-After, jitter bounds
+```
 
-        1. User fills form (email + amount)
-        2. Click Submit
-        3. Generate idempotency key: "1709123456789-x7k9m2p4q"
-        4. POST /api/submissions
-        5. Backend checks if key exists in cache
-            ├─ YES → Return cached response (no duplicate!)
-            └─ NO  → Process submission
-        6. Random behavior:
-            ├─ 40% → Return 200 immediately
-            ├─ 30% → Return 503 (triggers retry)
-            └─ 30% → Wait 5-10s, then return 200
-        7. If 503: Client retries with exponential backoff
-        8. Store submission in Map by idempotency key
-        9. Update UI with result
-        10. Display in submissions list
+Notable cases:
+- **50 concurrent requests with one key → exactly one record** (regression test for the v1 race).
+- Same key with a different body → 422.
+- A 503 followed by a retry → one record, not zero or two.
+- 4xx responses are never retried; timeouts and network errors are.
 
-     Installation
-     Clone the repository
+CI (GitHub Actions) runs lint, tests, the frontend build and a Docker build on every push and PR.
 
-     git clone https://github.com/akhilreddy20/eventually-consistent-form.git
-     cd eventually-consistent-form
+## Limitations, and what production would need
 
-     📡 API Documentation
-     Base URL :http://localhost:3001
-     Interactive Documentation:Swagger UI :http://localhost:3001/api-docs
+This is a learning project. The store is an **in-memory `Map`**, so:
 
-     🔍 How It Works
-         State Machine Flow
-            ┌────────┐
-            │  IDLE  │  ← Form is ready
-            └───┬────┘
-                │ User clicks Submit
-                ▼
-           ┌─────────┐
-           │ PENDING │  ← Initial request sent
-           └───┬─────┘
-               │
-               ├─────────────┬──────────────┬─────────────┐
-               │             │              │             │
-               │ 200 OK      │ 503 Error    │ Delayed     │
-               ▼             ▼              ▼             │
-            ┌─────────┐  ┌──────────┐  ┌─────────┐       │
-            │ SUCCESS │  │ RETRYING │  │ PENDING │       │
-            └─────────┘  └────┬─────┘  └───┬─────┘       │
-                              │            │             │
-                       Retry 1│            │ Wait 5-10s  │
-                              ▼            ▼             │
-                           ┌─────────┐  ┌─────────┐      │
-                           │ SUCCESS │  │ SUCCESS │      │
-                           └─────────┘  └─────────┘      │
-                              │                          │
-                       Retry 2│                          │
-                              ▼                          │
-                           ┌──────────┐                  │
-                           │ RETRYING │                  │
-                           └────┬─────┘                  │
-                                │                        │
-                         Retry 3│                        │
-                                ▼                        │
-                             ┌───────┐                   │
-                             │ ERROR │ ←─────────────────┘
-                             └───────┘
+1. **Durability:** a restart forgets every key, so a retry after a restart can duplicate. *Fix:* store keys in Postgres (`UNIQUE (key)`) or Redis (`SET key NX PX`) and save the response next to the key.
+2. **Horizontal scaling:** two instances don't share in-flight state. *Fix:* the shared store's atomic insert becomes the lock. Insert `status = 'processing'` first, then update it to `complete` with the response.
+3. **Key expiry:** keys are never evicted. *Fix:* a TTL (Stripe uses 24 h).
+4. **Side effects:** a real handler that calls a payment provider should pass the same key downstream, or use an outbox table so the record and its side effect commit together.
 
+## Project structure
 
-        Retry Logic (Exponential Backoff)
-        Timeline:
-        ─────────────────────────────────────────────────────────►
-         Attempt 1    Wait 1s     Attempt 2    Wait 2s    Attempt 3
-           (0ms)       (1000ms)     (1000ms)    (2000ms)    (3000ms)
+```
+backend/
+  src/app.js                         Express app factory (testable, no listen)
+  src/server.js                      entrypoint + graceful shutdown
+  src/controllers/submissions.controller.js   validation + HTTP mapping + OpenAPI docs
+  src/services/submissions.service.js         idempotency logic
+  test/                              node:test suites
+frontend/
+  src/services/api.js                retry policy (timeout, jitter, Retry-After)
+  src/hooks/useSubmission.js         state machine + double-submit guard
+  test/                              node:test suites
+```
 
-         Total Maximum Wait Time: 7 seconds (1s + 2s + 4s)
+## Author
 
-         Why This Prevents Duplicates:
-
-         Scenario: Network timeout causes retry
-
-            Request 1: POST { key: "abc-123" }
-                → Server creates submission
-                → Server stores: Map.set("abc-123", submission)
-                → Response lost in network ❌
-
-            Request 2: POST { key: "abc-123" } (retry with same key)
-                → Server checks: Map.has("abc-123") → TRUE
-                → Server returns cached submission ✅
-                → No duplicate created!
-        📁 Project Structure
-
-             eventually-consistent-form/
-               │
-               ├── backend/                          # Express.js Backend
-               │   ├── src/
-               │   │   ├── config/
-               │   │   │   └── swagger.js           # Swagger/OpenAPI configuration
-               │   │   ├── controllers/
-               │   │   │   └── submissions.controller.js  # Route handlers + API docs
-               │   │   ├── services/
-               │   │   │   └── submissions.service.js     # Business logic + mock behavior
-               │   │   └── server.js                # Entry point + middleware setup
-               │   ├── package.json                 # Backend dependencies
-               │   ├── nodemon.json                 # Dev server configuration
-               │
-               ├── frontend/                         # React Frontend
-               │   ├── src/
-               │   │   ├── components/
-               │   │   │   ├── SubmissionForm.jsx   # Form component
-               │   │   │   ├── StatusIndicator.jsx  # Status display
-               │   │   │   ├── SubmissionsList.jsx  # Results list
-               │   │   ├── hooks/
-               │   │   │   ├── useSubmission.js     # Submission state hook
-               │   │   │   └── useSubmissionsList.js # List state hook
-               │   │   ├── services/
-               │   │   │   └── api.js               # HTTP client + retry logic
-               │   │   ├── utils/
-               │   │   │   └── idempotency.js       # Key generation + validation
-               │   │   ├── App.jsx                  # Main app component
-               │   │   ├── App.css
-               │   │   ├── main.jsx                 # React entry point
-               │   │   └── index.css
-               │   ├── package.json                 # Frontend dependencies
-               │   └── vite.config.js               # Vite configuration 
-               │
-               └── index.html                       # HTML template
-               ├── .gitignore                       # Git ignore rules
-               └── README.md                        # This file
-
-
-    🧪 Testing
-        Manual Testing Scenarios
-        1. Happy Path - Immediate Success
-            Steps:
-                1. Enter email: test@example.com
-                2. Enter amount: 100
-                3. Click Submit
-            Expected:
-            ✅ Button: "Submit" → "Submitting..." → "Submit"
-            ✅ Status: Pending → Success (green checkmark)
-            ✅ Submission appears in list below
-            ✅ Form auto-resets after 3 seconds
-        2. Retry Scenario - Service Unavailable
-           Steps:
-             1. Submit multiple forms (5-10)
-               Expected:
-                ✅ Some show: Pending → Retrying (Attempt 1/3) → Success
-                ✅ Backend console logs "503 - Temporary Failure"
-                ✅ Client waits 1s, 2s, 4s between retries
-                ✅ Eventually succeeds or fails after 3 attempts
-
-        3. Delayed Success - Slow Response
-           Steps:
-              1. Submit a form
-                Expected:
-                ✅ Status: Pending (yellow spinner)
-                ✅ Waits 5-10 seconds
-                ✅ Status: Success (no retries needed)
-                ✅ Backend console logs "Simulating delayed success"
-        4. Duplicate Prevention - Idempotency
-            Steps:
-                1. Submit form: test@example.com, amount 100
-                2. Wait for success
-                3. Submit again with same data 5 times quickly
-                   Expected:
-                      ✅ Each submission has unique ID
-                      ✅ No duplicate records created
-                      ✅ Each has different idempotency key
-    Expected Success Rate
-          After submitting 10 forms, you should see approximately:
-             4 instant successes (40%) - immediate 200 OK
-             3 delayed successes (30%) - 5-10 second wait
-             3 with retries (30%) - 503 errors that retry and succeed
-               This proves the random mock behavior is working correctly!
-
-    🤝 Contributing
-            Contributions are welcome! Please follow these steps:
-            Fork the repository
-                 git clone https://github.com/akhilreddy20/eventually-consistent-form.git
-
-    👨‍💻 Author
-         Akhil Reddy
-           🌐 GitHub: @akhilreddy20
-           💼 LinkedIn: akhilreddy20
-
-    🌟 Star This Repository
-         If you found this project helpful, please consider giving it a ⭐ on GitHub! It helps others discover it too.
+**Akhil Reddy** · [GitHub](https://github.com/akhilreddy20) · [LinkedIn](https://linkedin.com/in/akhilreddy20)
